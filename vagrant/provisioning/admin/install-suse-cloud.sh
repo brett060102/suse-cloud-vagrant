@@ -23,7 +23,7 @@ export STY="dummy"
 
 # ensure cloud_admin pattern is fully installed
 # otherwise the check in install-suse-cloud will fail.
-zypper -n install -t pattern cloud_admin
+zypper -n --gpg-auto-import-keys install -t pattern cloud_admin
 
 install-suse-cloud -v
 
