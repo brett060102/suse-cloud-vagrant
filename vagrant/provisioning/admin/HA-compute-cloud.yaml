@@ -1,163 +1,211 @@
 # Input file for 'crowbar autobuild' command which sets up a cloud
-# with a single 2-node HA cluster using DRBD and SBD for STONITH, and
-# two KVM compute node as part of the HA cluster.
+# with a single 3-node HA cluster and two KVM compute nodes.
+
 ---
-global_options:
-- action_for_existing_proposals: skip   # could also be e.g. 'recreate' or 'overwrite'
 proposals:
-- barclamp: provisioner
-  attributes:
-    shell_prompt: USER@ALIAS:CWD SUFFIX
-- barclamp: nfs_client
-  name: glance
-  attributes:
-    exports:
-      "/var/lib/glance":
-        nfs_server: 192.168.124.10
-        export: "/var/lib/glance"
-        mount_path: "/var/lib/glance"
-        mount_options:
-        - ''
-  deployment:
-    elements:
-      nfs-client:
-      - "@@controller1@@"
-      - "@@controller2@@"
-- barclamp: nfs_client
-  name: nova
-  attributes:
-    exports:
-      "/var/lib/nova/instances":
-        nfs_server: 192.168.124.10
-        export: "/var/lib/nova/instances"
-        mount_path: "/var/lib/nova/instances"
-        mount_options:
-        - ''
-  deployment:
-    elements:
-      nfs-client:
-      - "@@compute1@@"
-      - "@@compute2@@"
 - barclamp: pacemaker
   name: services
-  action_if_exists: overwrite
   attributes:
     stonith:
-      mode: sbd
+      mode: libvirt
+      libvirt:
+        hypervisor_ip: ##hypervisor_ip##
       sbd:
-        watchdog_module: softdog
         nodes:
           @@controller1@@:
             devices:
-            - /dev/sdb
+            - ''
           @@controller2@@:
             devices:
-            - /dev/sdb
-          @@compute1@@:
+            - ''
+          @@controller3@@:
             devices:
-            - /dev/sdb
-          @@compute2@@:
-            devices:
-            - /dev/sdb
-    drbd:
-      enabled: true
+            - ''
+      per_node:
+        nodes:
+          @@controller1@@:
+            params: ''
+          @@controller2@@:
+            params: ''
+          @@controller3@@:
+            params: ''
   deployment:
     elements:
-      hawk-server:
-      - "@@controller1@@"
-      - "@@controller2@@"
       pacemaker-cluster-member:
-      - "@@controller1@@"
-      - "@@controller2@@"
+      - @@controller1@@
+      - @@controller2@@
+      - @@controller3@@
+      hawk-server:
+      - @@controller1@@
+      - @@controller2@@
+      - @@controller3@@
       pacemaker-remote:
-      - "@@compute1@@"
-      - "@@compute2@@"
+      - @@compute1@@
+      - @@compute2@@
 - barclamp: database
-  # Proposal name defaults to 'default'.
-  # Default attributes are good enough, so we just need to assign
-  # nodes to roles:
   attributes:
-    ha:
-      storage:
-        mode: drbd
-        drbd:
-          size: 1
+    sql_engine: mysql
   deployment:
     elements:
       database-server:
-        - cluster:services
+      - cluster:services
 - barclamp: rabbitmq
   attributes:
     ha:
       storage:
-        mode: drbd
-        drbd:
-          size: 1
+        shared:
+          device: ##shared_nfs_for_rabbitmq##
+          fstype: nfs
+          options: nfsvers=3
+    client:
+      enable_notifications: true
   deployment:
     elements:
       rabbitmq-server:
-        - cluster:services
+      - cluster:services
 - barclamp: keystone
+  attributes:
+    api:
+      region: 'CustomRegion'
   deployment:
     elements:
       keystone-server:
-        - cluster:services
+      - cluster:services
+- barclamp: swift
+  attributes:
+    zones: 1
+    replicas: 2
+    keystone_delay_auth_decision: true
+    allow_versions: true
+    middlewares:
+      crossdomain:
+        enabled: true
+      formpost:
+        enabled: true
+      staticweb:
+        enabled: true
+      tempurl:
+        enabled: true
+  deployment:
+    elements:
+      swift-dispersion: []
+      swift-proxy:
+      - cluster:services
+      swift-ring-compute:
+      - @@controller1@@
+      swift-storage:
+      - @@controller1@@
+      - @@controller2@@
 - barclamp: glance
+  attributes:
+    default_store: swift
   deployment:
     elements:
       glance-server:
-        - cluster:services
+      - cluster:services
 - barclamp: cinder
-  wipe_attributes:
-    - volumes
   attributes:
     volumes:
-      - backend_name: local
-        backend_driver: local
-        local:
-          file_size: 2000
-          volume_name: cinder-volumes
-          file_name: /var/lib/cinder/volume.raw
+    - backend_driver: local
+      backend_name: default
+      local:
+        volume_name: cinder-volumes
+        file_name: "/var/lib/cinder/volume.raw"
+        file_size: 2000
   deployment:
     elements:
       cinder-controller:
-        - cluster:services
+      - cluster:services
       cinder-volume:
-        - "@@compute1@@"
-        - "@@compute2@@"
+      - @@controller1@@
+      - @@controller2@@
 - barclamp: neutron
   attributes:
-    ml2_mechanism_drivers:
-    - linuxbridge
     ml2_type_drivers:
+    - gre
+    - vxlan
     - vlan
-    ml2_type_drivers_default_provider_network: vlan
-    ml2_type_drivers_default_tenant_network: vlan
   deployment:
     elements:
       neutron-server:
-        - cluster:services
+      - cluster:services
       neutron-network:
-        - cluster:services
+      - cluster:services
 - barclamp: nova
   attributes:
-    use_shared_instance_storage: true
+    itxt_instance: ''
     use_migration: true
     kvm:
       ksm_enabled: true
+    metadata:
+      vendordata:
+        json: '{"custom-key": "custom-value"}'
   deployment:
     elements:
+      ec2-api:
+      - @@controller1@@
       nova-controller:
-        - cluster:services
-      nova-compute-qemu:
-        - remotes:services
+      - cluster:services
+      nova-compute-hyperv: []
+      nova-compute-kvm:
+      - remotes:services
+      nova-compute-qemu: []
+      nova-compute-xen: []
 - barclamp: horizon
+  attributes:
   deployment:
     elements:
       horizon-server:
-        - cluster:services
+      - cluster:services
 - barclamp: heat
+  attributes:
   deployment:
     elements:
       heat-server:
-        - cluster:services
+      - cluster:services
+- barclamp: barbican
+  deployment:
+    elements:
+      barbican-controller:
+      - cluster:services
+- barclamp: manila
+  attributes:
+    default_share_type: default
+    shares:
+    - backend_driver: generic
+      backend_name: backend1
+      generic:
+        service_instance_user: root
+        service_instance_name_or_id: ##manila_instance_name_or_id##
+        service_net_name_or_ip: ##service_net_name_or_ip##
+        tenant_net_name_or_ip: ##tenant_net_name_or_ip##
+        service_instance_password: linux
+        share_volume_fstype: ext3
+        path_to_private_key: ""
+  deployment:
+    elements:
+      manila-server:
+      - cluster:services
+      manila-share:
+      - @@controller1@@
+      - @@controller2@@
+- barclamp: magnum
+  attributes:
+    cert:
+      cert_manager_type: barbican
+  deployment:
+    elements:
+      magnum-server:
+      - cluster:services
+- barclamp: sahara
+  attributes:
+  deployment:
+    elements:
+      sahara-server:
+      - cluster:services
+- barclamp: tempest
+  attributes:
+  deployment:
+    elements:
+      tempest:
+      - @@controller1@@
